@@ -1,0 +1,19 @@
+provider "azurerm" {
+    version = "~> 1.18.0"
+    alias = "subscriptionA"
+    tenant_id = ""
+    subscription_id = ""
+    client_id = ""
+    client_secret = ""
+}
+provider "azurerm" {
+    version = "~> 1.18.0"
+    alias = "subscriptionB"
+    tenant_id = ""
+    subscription_id = ""
+    client_id = ""
+    client_secret = ""
+}
+provider "random" {
+  version = "~> 2.0"
+}

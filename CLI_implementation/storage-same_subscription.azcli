@@ -1,0 +1,71 @@
+#!/bin/bash
+# # Precursor steps
+# . ./.secrets.bash
+# az ad sp create-for-rbac -n "CLOUD1012" --password ${PASSWORD} --role owner \
+#                             --scopes /subscriptions/${subscriptionA} \
+#                             /subscriptions/${subscriptionB}
+# # This invocation:
+# #  appId: d376541-8bfd-498e-9c99-3ed2a0608771
+
+# Do a quick test of Storage Account Service Endpoints
+
+# Everything in the same subscription
+
+. ./secrets.bash
+uniqName=06
+resourceGroupName=1012test${uniqName}
+vnetName=1012vnet
+storageAcctName=azrcstorage${uniqName}
+
+az login --service-principal -t ${TENANT} -u http://${APP_USERNAME} -p ${APP_PASSWORD} > /dev/null
+
+echo "=> Create VNet"
+az account set --subscription ${subscriptionA}
+az group create --location eastus2 --name ${resourceGroupName} 
+az network vnet create -g ${resourceGroupName} -n ${vnetName} --address-prefix 10.0.0.0/16 --subnet-name Public --subnet-prefix 10.0.0.0/24 
+
+echo "=> Create Private subnet w/ Storage service endpoint"
+az network vnet subnet create --vnet-name ${vnetName} --resource-group ${resourceGroupName} --name Private --address-prefix 10.0.1.0/24 --service-endpoints Microsoft.Storage
+
+echo "=> Restrict network access to 'Private' subnet"
+az network nsg create --resource-group ${resourceGroupName} --name myNsgPrivate
+az network vnet subnet update --vnet-name ${vnetName} --name Private --resource-group ${resourceGroupName} --network-security-group myNsgPrivate
+
+# # Allow all traffic to storage accounts from VNet
+# az network nsg rule create --resource-group ${resourceGroupName} --nsg-name myNsgPrivate --name Allow-Storage-All --access Allow --protocol "*" --direction Outbound --priority 100 --source-address-prefix "VirtualNetwork" --source-port-range "*" --destination-address-prefix "Storage" --destination-port-range "*"
+
+# # Deny all other outbound
+# az network nsg rule create --resource-group ${resourceGroupName} --nsg-name myNsgPrivate --name Deny-Internet-All --access Deny --protocol "*" --direction Outbound --priority 110 --source-address-prefix "VirtualNetwork" --source-port-range "*" --destination-address-prefix "Internet" --destination-port-range "*"
+
+echo "=> Set up NSGs: All all SSH traffic in"
+az network nsg rule create --resource-group ${resourceGroupName} --nsg-name myNsgPrivate --name Allow-SSH-All --access Allow --protocol Tcp --direction Inbound --priority 120 --source-address-prefix "*" --source-port-range "*" --destination-address-prefix "VirtualNetwork" --destination-port-range "22"
+
+echo "==> Create storage account with Service Endpoint"
+storageAcctName="azrcstoragetest"
+az storage account create --name $storageAcctName --resource-group ${resourceGroupName} --sku Standard_LRS --kind StorageV2
+
+saConnectionString=$(az storage account show-connection-string --name $storageAcctName --resource-group ${resourceGroupName} --query 'connectionString' --out tsv)
+
+saKey=$(az storage account keys list --account ${storageAcctName} --resource-group ${resourceGroupName} | jq -r ".[0].value")
+
+echo "=> Create file share"
+echo "==> Connection string = ${saConnectionString}"
+az storage share create --name my-file-share --quota 2048 --connection-string $saConnectionString > /dev/null
+
+echo "=> Deny traffic from everywhere and allow from 'Private' subnet in Subscription A"
+az storage account update --name $storageAcctName --resource-group ${resourceGroupName} --default-action Deny
+
+echo "=> Add network rule to limit what can get to the storage account"
+az storage account network-rule add --resource-group ${resourceGroupName} --account-name $storageAcctName --vnet-name ${vnetName} --subnet Private
+
+echo "=> Creating 'Public' VM"
+PUBLICVMIP=$(az vm create --resource-group ${resourceGroupName} --name myVmPublic --image UbuntuLTS --vnet-name ${vnetName} --subnet Public --admin-username racrawford --ssh-key-value "${publicSSH}" | jq -r ".publicIpAddress")
+
+echo "=> Creating 'Private' VM"
+PRIVATEVMIP=$(az vm create --resource-group ${resourceGroupName} --name myVmPrivate --image UbuntuLTS --vnet-name ${vnetName} --subnet Private --admin-username racrawford --ssh-key-value "${publicSSH}" | jq -r ".publicIpAddress")
+
+echo "Public VM test:"
+ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -t $PUBLICVMIP "sudo mkdir /mnt/MyAzureFileShare; sudo mount --types cifs //${storageAcctName}.file.core.windows.net/my-file-share /mnt/MyAzureFileShare --options vers=3.0,username=${storageAcctName},password=${saKey},dir_mode=0777,file_mode=0777,serverino"
+
+echo "Private VM test:"
+ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -t $PRIVATEVMIP "sudo mkdir /mnt/MyAzureFileShare; sudo mount --types cifs //${storageAcctName}.file.core.windows.net/my-file-share /mnt/MyAzureFileShare --options vers=3.0,username=${storageAcctName},password=${saKey},dir_mode=0777,file_mode=0777,serverino"

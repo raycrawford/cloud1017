@@ -1,0 +1,10 @@
+secrets.bash
+tf-one_sub/provider.tf
+.terraform
+terraform.tfstate*
+terraform
+terraform_0.11*
+terraform_11*
+tf-one_sub/graph.png
+provider.tf
+.DS_Store
